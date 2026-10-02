@@ -37,6 +37,12 @@ interface Props extends PanelProps<TableOptions> {}
 
 interface RowRecord {
   __rowId: string;
+  // The row's position within the original query result (frame.fields[*].values
+  // index) — needed to resolve Data links via field.getLinks({ valueRowIndex }),
+  // since AG Grid's own row index shifts with sorting/filtering. Only set for
+  // rows built from this panel's own frame (not the footer row or alert-query
+  // toasts, which have no corresponding frame position).
+  __rowIndex?: number;
   [key: string]: any;
 }
 
@@ -514,6 +520,43 @@ export const TablePanel: React.FC<Props> = ({ options, data, width, height, id, 
         def.floatingFilter = false;
       }
 
+      // Data links (Standard options > Data links, or a per-field Override)
+      // — Grafana attaches a getLinks() resolver to the field itself when
+      // links are configured, same mechanism the native Table panel uses.
+      // Only wraps the none/colorBackground/colorText modes, which still
+      // render plain text; pill/gauge/sparkline above already replace the
+      // cell with their own renderer and aren't combined with a link here.
+      if (
+        field.config?.links?.length &&
+        typeof field.getLinks === 'function' &&
+        (cellDisplayMode === 'none' || cellDisplayMode === 'colorBackground' || cellDisplayMode === 'colorText')
+      ) {
+        const baseCellStyle = def.cellStyle;
+        def.cellStyle = baseCellStyle
+          ? (p: any) => ({ ...(typeof baseCellStyle === 'function' ? baseCellStyle(p) : baseCellStyle), cursor: 'pointer' })
+          : { cursor: 'pointer' };
+        def.cellRenderer = (p: any) => {
+          const text = formatValue(p.value);
+          const links = field.getLinks!({ valueRowIndex: p.data?.__rowIndex ?? p.rowIndex });
+          const link = links?.[0];
+          if (!link) {
+            return text;
+          }
+          return (
+            <a
+              href={link.href}
+              target={link.target}
+              rel={link.target === '_blank' ? 'noopener noreferrer' : undefined}
+              onClick={link.onClick ? (e) => link.onClick!(e, link.origin) : undefined}
+              title={link.title || undefined}
+              style={{ color: 'inherit', textDecoration: 'underline' }}
+            >
+              {text}
+            </a>
+          );
+        };
+      }
+
       return def;
     });
 
@@ -533,7 +576,7 @@ export const TablePanel: React.FC<Props> = ({ options, data, width, height, id, 
     const nextRows: RowRecord[] = [];
     const nextRowById = new Map<string, RowRecord>();
     for (let i = 0; i < rowCount; i++) {
-      const record: RowRecord = { __rowId: '' };
+      const record: RowRecord = { __rowId: '', __rowIndex: i };
       frame.fields.forEach((field) => {
         record[field.name] = field.values[i];
       });
@@ -1182,7 +1225,7 @@ export const TablePanel: React.FC<Props> = ({ options, data, width, height, id, 
           <table>
             <tbody>
               {Object.entries(modalRow)
-                .filter(([k]) => k !== '__rowId')
+                .filter(([k]) => k !== '__rowId' && k !== '__rowIndex')
                 .map(([k, v]) => (
                   <tr key={k}>
                     <td style={{ fontWeight: 600, paddingRight: 12 }}>{k}</td>
