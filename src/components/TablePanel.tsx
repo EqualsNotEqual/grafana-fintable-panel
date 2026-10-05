@@ -573,22 +573,32 @@ export const TablePanel: React.FC<Props> = ({ options, data, width, height, id, 
       return { rows: [] as RowRecord[], rowById: new Map<string, RowRecord>() };
     }
     const rowCount = frame.length;
-    const nextRows: RowRecord[] = [];
     const nextRowById = new Map<string, RowRecord>();
+    const hasUniqueId = Boolean(options.uniqueIdFields && options.uniqueIdFields.length > 0);
     for (let i = 0; i < rowCount; i++) {
-      const record: RowRecord = { __rowId: '', __rowIndex: i };
+      const values: Record<string, any> = {};
       frame.fields.forEach((field) => {
-        record[field.name] = field.values[i];
+        values[field.name] = field.values[i];
       });
-      const rfqId =
-        options.uniqueIdFields && options.uniqueIdFields.length > 0
-          ? options.uniqueIdFields.map((f) => String(record[f] ?? '')).join('|')
-          : String(i);
-      record.__rowId = rfqId;
-      nextRows.push(record);
-      nextRowById.set(rfqId, record);
+      const rfqId = hasUniqueId ? options.uniqueIdFields!.map((f) => String(values[f] ?? '')).join('|') : String(i);
+      // A streaming source (e.g. a NATS JetStream subject feeding a growing
+      // buffer) can deliver several messages for the same entity within a
+      // single query result — later rows in the frame are the newer values.
+      // When a unique id is configured, treat a repeated key as an update:
+      // overwrite the existing row's values and keep its original grid
+      // position, rather than appending a second row for the same entity.
+      // Without a unique id there's no way to know two rows are "the same
+      // thing", so every row still gets its own position (unchanged from
+      // before).
+      const existing = hasUniqueId ? nextRowById.get(rfqId) : undefined;
+      if (existing) {
+        Object.assign(existing, values);
+        existing.__rowIndex = i;
+      } else {
+        nextRowById.set(rfqId, { __rowId: rfqId, __rowIndex: i, ...values });
+      }
     }
-    return { rows: nextRows, rowById: nextRowById };
+    return { rows: Array.from(nextRowById.values()), rowById: nextRowById };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frame, options.uniqueIdFields?.join(',')]);
 
